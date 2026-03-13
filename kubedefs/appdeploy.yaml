@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lumia-app
+  labels: 
+    app: lumia-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lumia-app
+  template:
+    metadata:
+      labels:
+        app: lumia-app
+    spec:
+      containers:
+      - name: lumia-app
+        image: ndzenyuy/lumia-app:latest
+        imagePullPolicy: Always
+        ports:
+        - name: lumia-app-port
+          containerPort: 8080
+        env:
+        - name: DB_HOST
+          value: "lumiadb"
+        - name: DB_PORT
+          value: "3306"
+        - name: DB_NAME
+          value: "accounts"
+        - name: DB_USER
+          value: "admin"
+        - name: DB_PASS
+          valueFrom:
+            secretKeyRef:
+              name: app-secret
+              key: db-pass
+      initContainers:
+      - name: init-mydb
+        image: busybox
+        command: ['sh', '-c']
+        args: ['until nslookup lumiadb.$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace).svc.cluster.local; do echo waiting for mydb; sleep 2; done;']
