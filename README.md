@@ -42,6 +42,18 @@ lumiatech-app/
 
 ```
 lumiatech-manifests/
+├── helm/
+│   └── lumiatech/
+│       ├── Chart.yaml          # Chart metadata
+│       ├── values.yaml         # Default values
+│       └── templates/          # Kubernetes manifest templates
+│           ├── appdeploy.yaml
+│           ├── appservice.yaml
+│           ├── appingress.yaml
+│           ├── dbdeploy.yaml
+│           ├── dbservice.yaml
+│           ├── dbpvc.yaml
+│           └── secret.yaml
 ├── kubedefs/
 │   ├── appdeploy.yaml      # Application deployment
 │   ├── appservice.yaml     # Application service
@@ -217,10 +229,10 @@ kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.
 
 ```bash
 # Application repository
-git clone <app-repo-url>
+git clone https://github.com/DevOps-Cloud-Mentorship/Project-4-Deploy-to-EKS-app.git
 
 # Manifest repository
-git clone <manifest-repo-url>
+git clone https://github.com/DevOps-Cloud-Mentorship/Project-4-Deploy-to-EKS-manifest.git
 ```
 
 ### 2. Create Namespace
@@ -230,25 +242,155 @@ kubectl create namespace lumiatech
 kubectl config set-context --current --namespace=lumiatech
 ```
 
-### 3. Deploy Using Kubectl
+### 3. Create Helm Chart
+
+#### Create the chart structure
 
 ```bash
-cd kubedefs
-
-# Deploy in order
-kubectl apply -f secret.yaml
-kubectl apply -f dbpvc.yaml
-kubectl apply -f dbdeploy.yaml
-kubectl apply -f dbservice.yaml
-kubectl apply -f appdeploy.yaml
-kubectl apply -f appservice.yaml
-kubectl apply -f appingress.yaml
-
-# Or deploy all at once
-kubectl apply -f .
+mkdir -p helm/lumiatech/templates
 ```
 
-### 4. Verify Deployment
+#### Create `helm/lumiatech/Chart.yaml`
+
+```yaml
+apiVersion: v2
+name: lumiatech
+description: Lumiatech Java application with MySQL
+type: application
+version: 1.0.0
+appVersion: "latest"
+```
+
+#### Create `helm/lumiatech/values.yaml`
+
+```yaml
+app:
+  image: ndzenyuy/lumia-app:latest
+  replicas: 1
+  port: 8080
+
+db:
+  image: ndzenyuy/lumia-db:latest
+  port: 3306
+  name: accounts
+  user: admin
+  password: admin123
+  storage: 3Gi
+  storageClass: gp2
+
+ingress:
+  host: www.lumiatechs.com
+  className: nginx
+```
+
+#### Copy manifests into templates
+
+```bash
+cp kubedefs/*.yaml helm/lumiatech/templates/
+```
+
+#### Templatize `helm/lumiatech/templates/secret.yaml`
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secret
+type: Opaque
+data:
+  db-pass: {{ .Values.db.password | b64enc }}
+```
+
+#### Templatize `helm/lumiatech/templates/appdeploy.yaml`
+
+Replace hardcoded values with template variables:
+
+```yaml
+spec:
+  replicas: {{ .Values.app.replicas }}
+  ...
+  containers:
+  - name: lumia-app
+    image: {{ .Values.app.image }}
+    env:
+    - name: DB_PORT
+      value: "{{ .Values.db.port }}"
+    - name: DB_NAME
+      value: "{{ .Values.db.name }}"
+    - name: DB_USER
+      value: "{{ .Values.db.user }}"
+    - name: DB_PASS
+      valueFrom:
+        secretKeyRef:
+          name: app-secret
+          key: db-pass
+```
+
+#### Templatize `helm/lumiatech/templates/dbpvc.yaml`
+
+```yaml
+spec:
+  storageClassName: {{ .Values.db.storageClass }}
+  resources:
+    requests:
+      storage: {{ .Values.db.storage }}
+```
+
+#### Templatize `helm/lumiatech/templates/appingress.yaml`
+
+```yaml
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+  - host: {{ .Values.ingress.host }}
+```
+
+#### Validate the chart before deploying
+
+```bash
+# Lint the chart for errors
+helm lint helm/lumiatech
+
+# Preview rendered templates without deploying
+helm template lumiatech helm/lumiatech -n lumiatech
+```
+
+### 4. Deploy Using Helm
+
+```bash
+# Install the chart
+helm install lumiatech helm/lumiatech -n lumiatech --create-namespace
+
+# Verify the release
+helm list -n lumiatech
+```
+
+#### Upgrade after changes
+
+```bash
+helm upgrade lumiatech helm/lumiatech -n lumiatech
+```
+
+#### Override a value without editing values.yaml
+
+```bash
+helm upgrade lumiatech helm/lumiatech -n lumiatech \
+  --set app.image=ndzenyuy/lumia-app:v2.0
+```
+
+#### Rollback to a previous release
+
+```bash
+helm rollback lumiatech -n lumiatech
+```
+
+#### Uninstall
+
+```bash
+helm uninstall lumiatech -n lumiatech
+```
+
+### 5. Verify Deployment
 
 ```bash
 kubectl get pods -n lumiatech
@@ -256,7 +398,7 @@ kubectl get svc -n lumiatech
 kubectl get ingress -n lumiatech
 ```
 
-### 5. Access Application
+### 6. Access Application
 
 ```bash
 # Get ingress load balancer URL
@@ -269,33 +411,110 @@ echo "<INGRESS_LB_URL> www.lumiatechs.com" >> /etc/hosts
 http://www.lumiatechs.com
 ```
 
-# Delete cluster
+### 7. Configure ArgoCD
+
+#### Update kubeconfig
+
 ```bash
-eksctl delete cluster --name lumiatech-cluster --region us-east-2
+aws eks update-kubeconfig --name lumiatech-cluster --region us-east-1
 ```
-## Install argoCD on the cluster
+
+#### Install ArgoCD on the cluster
+
 ```bash
- kubectl create namespace argocd
- kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
- ```
-## Verify installation
+kubectl create namespace argocd
+kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+```
+
+#### Verify installation
+
 ```bash
 kubectl get all -n argocd
 ```
-## Expose argocd
+
+#### Expose ArgoCD
+
 ```bash
 kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
 ```
-## Export argocd dns
+
+#### Get ArgoCD server DNS
+
 ```bash
-export ARGOCD_SERVER=`kubectl get svc argocd-server -n argocd -o json | jq --raw-output '.status.loadBalancer.ingress[0].hostname'`
-```
-Get the argocd dns
+export ARGOCD_SERVER=$(kubectl get svc argocd-server -n argocd -o json | jq --raw-output '.status.loadBalancer.ingress[0].hostname')
 echo $ARGOCD_SERVER
-export argocd password
-export ARGO_PWD=`kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d`
-get the argocd PASSWORD
+```
+
+#### Get ArgoCD admin password
+
+```bash
+export ARGO_PWD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
 echo $ARGO_PWD
+```
+
+#### Login to ArgoCD UI
+
+Open your browser and navigate to:
+```
+https://<ARGOCD_SERVER>
+```
+
+- **Username**: `admin`
+- **Password**: value of `$ARGO_PWD`
+
+#### Create ArgoCD Application pointing to Helm chart
+
+**Option 1: Via CLI**
+
+```bash
+# Install ArgoCD CLI
+curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
+chmod +x argocd && sudo mv argocd /usr/local/bin/
+
+# Login
+argocd login $ARGOCD_SERVER --username admin --password $ARGO_PWD --insecure
+
+# Create the app using the Helm chart path
+argocd app create lumiatech \
+  --repo https://github.com/DevOps-Cloud-Mentorship/Project-4-Deploy-to-EKS-manifest.git \
+  --path helm/lumiatech \
+  --dest-server https://kubernetes.default.svc \
+  --dest-namespace lumiatech \
+  --sync-policy automated \
+  --auto-prune \
+  --self-heal
+
+# Verify the app
+argocd app get lumiatech
+
+# Sync manually if needed
+argocd app sync lumiatech
+```
+
+**Option 2: Via UI**
+
+1. Click **+ New App**
+2. Fill in the form:
+
+| Field | Value |
+|---|---|
+| Application Name | `lumiatech` |
+| Project | `default` |
+| Sync Policy | `Automatic` |
+| Repository URL | `https://github.com/DevOps-Cloud-Mentorship/Project-4-Deploy-to-EKS-manifest.git` |
+| Revision | `HEAD` |
+| Path | `helm/lumiatech` |
+| Cluster URL | `https://kubernetes.default.svc` |
+| Namespace | `lumiatech` |
+
+3. Click **Create**
+4. Click **Sync** → **Synchronize**
+
+#### Delete cluster
+
+```bash
+eksctl delete cluster --name lumiatech-cluster --region us-east-1
+```
 
 
 ## CI/CD Pipeline

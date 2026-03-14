@@ -1,11 +1,73 @@
 #!/bin/bash
 
-echo "=== Simple Route53 CNAME Configuration ==="
+echo "=== Pre-flight Checks ==="
 echo ""
 
 # Variables
 DOMAIN="www.lumiatechs.com"
 BASE_DOMAIN="lumiatechs.com"
+NAMESPACE="lumiatech"
+MANIFESTS_DIR="kubedefs"
+
+# Check 1: Namespace exists and context is set
+echo "[Check 1] Ensuring namespace '$NAMESPACE' exists and context is set..."
+kubectl create namespace $NAMESPACE --dry-run=client -o yaml | kubectl apply -f - > /dev/null 2>&1
+kubectl config set-context --current --namespace=$NAMESPACE > /dev/null 2>&1
+CURRENT_NS=$(kubectl config view --minify --output 'jsonpath={..namespace}')
+if [ "$CURRENT_NS" == "$NAMESPACE" ]; then
+    echo "   ✅ Namespace: $CURRENT_NS"
+else
+    echo "   ❌ Failed to set namespace to $NAMESPACE (current: $CURRENT_NS)"
+    exit 1
+fi
+
+# Check 2: Apply all manifests
+echo ""
+echo "[Check 2] Applying manifests from $MANIFESTS_DIR/..."
+if [ ! -d "$MANIFESTS_DIR" ]; then
+    echo "   ❌ Directory '$MANIFESTS_DIR' not found. Run this script from the project root."
+    exit 1
+fi
+kubectl apply -f $MANIFESTS_DIR/ -n $NAMESPACE > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+    echo "   ✅ Manifests applied"
+else
+    echo "   ⚠️  Some manifests may have failed. Continuing..."
+fi
+
+# Check 3: Wait for all pods to be Running
+echo ""
+echo "[Check 3] Waiting for all pods to be Running in namespace '$NAMESPACE'..."
+MAX_WAIT=180
+ELAPSED=0
+INTERVAL=10
+while true; do
+    NOT_READY=$(kubectl get pods -n $NAMESPACE --no-headers 2>/dev/null | grep -v 'Running\|Completed' | wc -l)
+    TOTAL=$(kubectl get pods -n $NAMESPACE --no-headers 2>/dev/null | wc -l)
+    if [ "$TOTAL" -eq 0 ]; then
+        echo "   ⚠️  No pods found in namespace $NAMESPACE. Check manifests were applied correctly."
+        kubectl get pods -n $NAMESPACE
+        exit 1
+    fi
+    if [ "$NOT_READY" -eq 0 ]; then
+        echo "   ✅ All $TOTAL pod(s) are Running"
+        break
+    fi
+    if [ "$ELAPSED" -ge "$MAX_WAIT" ]; then
+        echo "   ❌ Timed out waiting for pods after ${MAX_WAIT}s. Current pod status:"
+        kubectl get pods -n $NAMESPACE
+        echo ""
+        echo "   Check logs with: kubectl logs -l app=lumia-app -n $NAMESPACE"
+        exit 1
+    fi
+    printf "\r   Waiting for pods... %d/%d ready (%ds elapsed)" $((TOTAL - NOT_READY)) $TOTAL $ELAPSED
+    sleep $INTERVAL
+    ELAPSED=$((ELAPSED + INTERVAL))
+done
+
+echo ""
+echo "=== Pre-flight Checks Passed. Starting Route53 CNAME Configuration ==="
+echo ""
 
 # Get Load Balancer DNS
 echo "1. Getting Load Balancer DNS..."
@@ -90,7 +152,7 @@ fi
 # Restore ingress host
 echo ""
 echo "5. Configuring ingress..."
-kubectl apply -f kubedefs/appingress.yaml > /dev/null 2>&1
+kubectl apply -f kubedefs/appingress.yaml -n lumiatech > /dev/null 2>&1
 
 if [ $? -eq 0 ]; then
     echo "   ✅ Ingress configured"
@@ -106,8 +168,8 @@ echo "   Ingress Host: $INGRESS_HOST"
 
 # Wait for DNS
 echo ""
-echo "7. Waiting for DNS propagation (30 seconds)..."
-for i in {30..1}; do
+echo "7. Waiting for DNS propagation (60 seconds)..."
+for i in {60..1}; do
     printf "\r   Waiting... %2d seconds remaining" $i
     sleep 1
 done
@@ -138,12 +200,19 @@ fi
 # Test HTTP
 echo ""
 echo "9. Testing HTTP access..."
-HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 http://$DOMAIN 2>/dev/null)
+# First test via Host header (bypasses DNS, confirms ingress routing)
+HOST_TEST=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 -H "Host: $DOMAIN" http://$LB_DNS 2>/dev/null)
+echo "   Ingress routing test (Host header): HTTP $HOST_TEST"
+if [ "$HOST_TEST" == "404" ] || [ "$HOST_TEST" == "502" ]; then
+    echo "   ⚠️  App may have startup errors. Check: kubectl logs -l app=lumia-app -n lumiatech"
+fi
 
+# Then test via domain
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 10 http://$DOMAIN 2>/dev/null)
 if [ "$HTTP_CODE" == "200" ] || [ "$HTTP_CODE" == "302" ]; then
     echo "   ✅ Application is accessible! (HTTP $HTTP_CODE)"
 elif [ "$HTTP_CODE" == "000" ]; then
-    echo "   ⚠️  Cannot connect yet (DNS still propagating)"
+    echo "   ⚠️  Cannot connect yet (DNS still propagating - wait 5 more minutes)"
 else
     echo "   ⚠️  Received HTTP $HTTP_CODE"
 fi
