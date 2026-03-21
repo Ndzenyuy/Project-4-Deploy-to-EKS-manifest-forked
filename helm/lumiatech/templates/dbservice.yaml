@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: lumiadb
+spec:
+  ports:
+  - port: 3306
+    targetPort: lumiadb-port
+    protocol: TCP
+  selector:
+    app: lumiadb
+  type: ClusterIP

@@ -571,6 +571,170 @@ echo -n 'your-password' | base64
 
 ## Monitoring & Troubleshooting
 
+### Install Prometheus & Grafana
+
+#### Add Helm repository
+
+```bash
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+helm repo update
+```
+
+#### Install kube-prometheus-stack
+
+```bash
+kubectl create namespace monitoring
+
+helm install prometheus prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --set grafana.adminPassword=admin123 \
+  --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false
+```
+
+#### Verify installation
+
+```bash
+kubectl get pods -n monitoring
+kubectl get svc -n monitoring
+```
+
+#### Access Grafana
+
+```bash
+kubectl patch svc prometheus-grafana -n monitoring -p '{"spec": {"type": "LoadBalancer"}}'
+
+# Wait for external hostname
+kubectl get svc prometheus-grafana -n monitoring -w
+
+# Get the URL
+export GRAFANA_URL=$(kubectl get svc prometheus-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "http://$GRAFANA_URL"
+```
+
+Open `http://<GRAFANA_URL>` in your browser.
+
+- **Username**: `admin`
+- **Password**: `admin123`
+
+#### Access Prometheus UI
+
+```bash
+kubectl patch svc prometheus-kube-prometheus-prometheus -n monitoring -p '{"spec": {"type": "LoadBalancer"}}'
+
+# Get the URL
+export PROMETHEUS_URL=$(kubectl get svc prometheus-kube-prometheus-prometheus -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "http://$PROMETHEUS_URL:9090"
+```
+
+Open `http://<PROMETHEUS_URL>:9090` in your browser.
+
+#### Configure ServiceMonitor for lumiatech app
+
+Create `kubedefs/servicemonitor.yaml` to scrape app metrics:
+
+```yaml
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: lumiatech-monitor
+  namespace: monitoring
+  labels:
+    release: prometheus
+spec:
+  namespaceSelector:
+    matchNames:
+      - lumiatech
+  selector:
+    matchLabels:
+      app: lumia-app
+  endpoints:
+    - port: http
+      path: /actuator/prometheus
+      interval: 30s
+```
+
+```bash
+kubectl apply -f kubedefs/servicemonitor.yaml
+```
+
+#### Verify Prometheus datasource in Grafana
+
+The `kube-prometheus-stack` chart automatically configures Prometheus as a datasource in Grafana. To verify:
+
+1. Login to Grafana
+2. Go to **Connections** → **Data Sources**
+3. Confirm `Prometheus` is listed and its status shows **Data source connected and labels found**
+
+If the datasource is missing or shows **No data**, add/fix it manually:
+
+1. Click **Add data source** → select **Prometheus**
+2. Set URL to the in-cluster DNS name:
+   ```
+   http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+   ```
+3. Click **Save & Test** — you should see **Data source connected and labels found**
+
+#### Troubleshoot: No data in Grafana dashboards
+
+If dashboards show **No data**, run through these checks:
+
+```bash
+# 1. Confirm Prometheus pods are running
+kubectl get pods -n monitoring
+
+# 2. Confirm Prometheus is scraping targets
+# Open Prometheus UI → Status → Targets — all targets should be UP
+echo "http://$PROMETHEUS_URL:9090/targets"
+
+# 3. Check Prometheus has data by running a test query in the UI
+# Go to http://$PROMETHEUS_URL:9090 → Graph → run:
+# up
+# node_cpu_seconds_total
+
+# 4. Verify the datasource URL in Grafana is the internal cluster DNS
+# Connections → Data Sources → Prometheus → URL should be:
+# http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
+
+# 5. Check Grafana can reach Prometheus
+kubectl exec -n monitoring deploy/prometheus-grafana -- \
+  wget -qO- http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090/-/healthy
+
+# 6. Check for scrape config issues
+kubectl logs -n monitoring -l app=prometheus --container prometheus | tail -50
+```
+
+Common causes:
+- **Datasource URL wrong**: Must use the internal cluster DNS, not the external LoadBalancer hostname
+- **Time range too narrow**: Set Grafana time range to **Last 1 hour** or wider
+- **Wrong dashboard variables**: On imported dashboards, check the `datasource` dropdown at the top is set to `Prometheus`
+- **No metrics endpoint on app**: The JVM dashboard (ID `4701`) requires Spring Boot Actuator with Micrometer — only works if your app exposes `/actuator/prometheus`
+
+#### Useful Grafana dashboards
+
+Import these dashboards via Grafana UI (**+** → **Import** → enter ID):
+
+| Dashboard | ID |
+|---|---|
+| Kubernetes cluster overview | `315` |
+| Kubernetes pod metrics | `6417` |
+| JVM (Micrometer) | `4701` |
+| Node Exporter Full | `1860` |
+
+#### Upgrade or change Grafana password
+
+```bash
+helm upgrade prometheus prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --set grafana.adminPassword=<new-password>
+```
+
+#### Uninstall
+
+```bash
+helm uninstall prometheus -n monitoring
+kubectl delete namespace monitoring
+```
+
 ### Check Logs
 
 ```bash
@@ -615,7 +779,7 @@ eksctl delete cluster --name lumiatech-cluster --region us-east-1
 ## Future Enhancements
 
 - Add Horizontal Pod Autoscaler (HPA)
-- Implement monitoring with Prometheus/Grafana
+- ~~Implement monitoring with Prometheus/Grafana~~ ✅ Done
 - Add centralized logging with ELK/EFK stack
 - Implement GitOps with ArgoCD/FluxCD
 - Add health checks and readiness probes

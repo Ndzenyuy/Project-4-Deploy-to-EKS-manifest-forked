@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lumiadb
+  labels:
+    app: lumiadb
+spec:
+  selector:
+    matchLabels:
+      app: lumiadb
+  replicas: {{ .Values.db.replicas }}
+  template:
+    metadata:
+      labels:
+        app: lumiadb
+    spec:
+      containers:
+      - name: lumiadb
+        image: ndzenyuy/lumia-db:latest
+        volumeMounts:
+        - mountPath: /var/lib/mysql
+          name: lumia-db-data
+        ports:
+        - name: lumiadb-port
+          containerPort: 3306
+        env:
+         - name: MYSQL_ROOT_PASSWORD
+           valueFrom:
+             secretKeyRef:
+               name: app-secret
+               key: db-pass
+      volumes:
+        - name: lumia-db-data
+          persistentVolumeClaim:
+            claimName: db-pv-claim 
+
+      initContainers:
+        - name: busybox
+          image: busybox:latest
+          command: ["sh", "-c", "rm -rf /var/lib/mysql/lost+found"]
+          volumeMounts:
+            - name: lumia-db-data
+              mountPath: /var/lib/mysql
