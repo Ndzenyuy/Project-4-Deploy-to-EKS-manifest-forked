@@ -1,280 +1,155 @@
-# lumiatech Java Application - Kubernetes Deployment
+# lumiatech Java Application — Kubernetes Deployment on AWS EKS
 
 ## Overview
 
-This project deploys a Java web application (lumiatech) to a Kubernetes cluster using a GitOps approach with two separate repositories:
+This is the **manifest repository** for the lumiatech Java Spring MVC application. It follows a GitOps pattern with two repositories:
 
-- **Application Repository**: Contains source code, Dockerfile, and CI/CD pipeline
-- **Manifest Repository**: Contains Kubernetes manifests and Helm charts for deployment
+- **Application repository** (`Project-4-Deploy-to-EKS-app`): Java source code, Dockerfile, Jenkinsfile CI/CD pipeline
+- **Manifest repository** (this repo): Kubernetes manifests (`kubedefs/`) and Helm chart (`helm/lumiatech/`)
+
+ArgoCD watches this repository and syncs changes to the cluster automatically.
 
 ## Architecture
 
 ![Kubernetes Architecture Diagram](./images/project-4-deploy-to-eks.png)
 
-- **Application**: Java Spring MVC application (WAR file)
-- **Database**: MySQL
-- **Orchestration**: Kubernetes
-- **Deployment Tool**: Helm
-- **Ingress**: NGINX Ingress Controller
+**Application stack** (all deployed in the `lumiatech` namespace):
+
+| Component | Image | Port | Purpose |
+|---|---|---|---|
+| lumia-app | `ndzenyuy/lumia-app` | 8080 | Java Spring MVC (WAR on Tomcat) |
+| lumiadb | `ndzenyuy/lumia-db` | 3306 | MySQL 8.0.33 with pre-loaded schema |
+| rmq01 | `rabbitmq:3.13-management` | 5672 / 15672 | RabbitMQ message queue |
+| mc01 | `memcached:1.6-alpine` | 11211 | Memcached cache |
+
+**Traffic flow:** Internet → AWS NLB → NGINX Ingress Controller → lumia-app-service:8080 → lumia-app pods
+
+**Storage:** MySQL data persists in a PersistentVolumeClaim backed by AWS EBS gp2 (3Gi). The AWS EBS CSI driver is required for this to work.
+
+---
 
 ## Prerequisites
 
-- Kubernetes cluster (v1.35)
-- kubectl configured
-- Helm 3.x installed
-- Docker registry access
-- NGINX Ingress Controller installed in cluster
+### Required Tools
 
-## Repository Structure
-
-### Application Repository
-
-```
-lumiatech-app/
-├── src/                    # Java source code
-├── pom.xml                 # Maven build configuration
-├── Dockerfile              # Container image definition
-├── Jenkinsfile             # CI/CD pipeline
-└── README.md
-```
-
-### Manifest Repository
-
-```
-lumiatech-manifests/
-├── helm/
-│   └── lumiatech/
-│       ├── Chart.yaml          # Chart metadata
-│       ├── values.yaml         # Default values
-│       └── templates/          # Kubernetes manifest templates
-│           ├── appdeploy.yaml
-│           ├── appservice.yaml
-│           ├── appingress.yaml
-│           ├── dbdeploy.yaml
-│           ├── dbservice.yaml
-│           ├── dbpvc.yaml
-│           └── secret.yaml
-├── kubedefs/
-│   ├── appdeploy.yaml      # Application deployment
-│   ├── appservice.yaml     # Application service
-│   ├── appingress.yaml     # NGINX ingress
-│   ├── dbdeploy.yaml       # Database deployment
-│   ├── dbservice.yaml      # Database service
-│   ├── dbpvc.yaml          # Persistent volume claim
-│   └── secret.yaml         # Application secrets
-└── README.md
-```
-
-## Deployment Components
-
-### Application Deployment
-
-- **Image**: `ndzenyuy/lumia-app:latest`
-- **Port**: 8080
-- **Init Containers**: Wait for database service
-- **Service Type**: ClusterIP
-- **Environment Variables**: Database connection details
-
-### Database Deployment
-
-- **Image**: `ndzenyuy/lumia-db:latest`
-- **Port**: 3306
-- **Storage**: PersistentVolumeClaim (3Gi, gp2 storage class)
-- **Credentials**: Stored in Kubernetes Secret
-
-### Ingress
-
-- **Host**: `www.lumiatechs.com`
-- **Path**: `/`
-- **Backend**: lumia-app-service:8080
-
-## Docker Images Build and Push
-
-### Prerequisites for Building Images
-
-- Docker installed and running
-- Docker Hub account
-- Maven 3.6+ installed
-- Java 17+ installed
-
-### Build and Push Process
-
-The application source code is located in the `src/` folder and uses Maven for building.
-
-#### Option 1: Automated Script (Recommended)
+Install these on your workstation before starting:
 
 ```bash
-# Make script executable
-chmod +x build-and-push.sh
+# 1. AWS CLI
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip && sudo ./aws/install
+aws --version
 
-# Run the build and push script
-./build-and-push.sh
-```
-
-#### Option 2: Manual Steps
-
-```bash
-# 1. Login to Docker Hub
-docker login
-
-# 2. Build Java application (source code in src/ folder)
-mvn clean install -DskipTests
-
-# 3. Build application Docker image
-docker build -t ndzenyuy/lumia-app:latest -f Docker-files/app/Dockerfile .
-
-# 4. Build database Docker image
-docker build -t ndzenyuy/lumia-db:latest -f Docker-files/db/Dockerfile Docker-files/db/
-
-# 5. Push images to Docker Hub
-docker push ndzenyuy/lumia-app:latest
-docker push ndzenyuy/lumia-db:latest
-
-# 6. Verify images
-docker images | grep -E "(lumia-app|lumia-db)"
-```
-
-### Image Details
-
-- **Application Image**: Built from Java source code in `src/` folder using Maven
-- **Database Image**: MySQL 8.0.33 with pre-loaded database schema
-- **Build Context**: Application builds from project root to access `target/` directory
-
-### Docker Hub Images
-
-- **Application**: `ndzenyuy/lumia-app:latest`
-- **Database**: `ndzenyuy/lumia-db:latest`
-
-## AWS EKS Cluster Setup
-
-### Prerequisites
-
-- AWS CLI configured with appropriate credentials
-- IAM permissions to create EKS clusters and related resources
-
-### Install Required Tools
-
-```bash
-# Install kubectl
-curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
-sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
-
-# Install eksctl
+# 2. eksctl
 curl --silent --location "https://github.com/weaveworks/eksctl/releases/latest/download/eksctl_$(uname -s)_amd64.tar.gz" | tar xz -C /tmp
 sudo mv /tmp/eksctl /usr/local/bin
-
-# Install Helm
-curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-
-# Verify installations
-kubectl version --client
 eksctl version
+
+# 3. kubectl
+curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+sudo install -o root -g root -m 0755 kubectl /usr/local/bin/kubectl
+kubectl version --client
+
+# 4. Helm 3
+curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 helm version
 ```
 
-### Create EKS Cluster
+### AWS Requirements
+
+- AWS CLI configured: `aws configure`
+- IAM permissions to create EKS clusters, EC2 instances, EBS volumes, IAM roles, and Route53 records
+- An EC2 key pair created in us-east-1 named `lumiatechs-eks-keys` (or update `eks-setup/eks-setup.sh` with your key name)
+
+---
+
+## Phase 1 — Create the EKS Cluster
 
 ```bash
-# Create EKS cluster
-eksctl create cluster \
-  --name lumiatech-cluster \
-  --region us-east-1 \
-  --nodegroup-name lumiatech-nodes \
-  --node-type t3.medium \
-  --nodes 2 \
-  --nodes-min 1 \
-  --nodes-max 3 \
-  --managed
+# Verify your AWS credentials first
+aws sts get-caller-identity
 
-# Configure kubectl context
-aws eks update-kubeconfig --region us-east-1 --name lumiatech-cluster
+# Create the cluster (takes 15–20 minutes)
+bash eks-setup/eks-setup.sh
+
+# Configure kubectl to use the new cluster
+aws eks update-kubeconfig --name lumiatechs-eks-cluster --region us-east-1
+
+# Verify nodes are Ready
+kubectl get nodes
 ```
 
-### Install NGINX Ingress Controller
+**Expected output:**
+```
+NAME                          STATUS   ROLES    AGE   VERSION
+ip-192-168-xx-xx.ec2...      Ready    <none>   2m    v1.35.x
+ip-192-168-xx-xx.ec2...      Ready    <none>   2m    v1.35.x
+```
+
+---
+
+## Phase 2 — Install Cluster Infrastructure
+
+Both of these must be in place before deploying the application.
+
+### 2a. NGINX Ingress Controller
 
 ```bash
-# Deploy NGINX Ingress Controller for AWS
 kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.8.1/deploy/static/provider/aws/deploy.yaml
 
-# Wait for ingress controller to be ready
+# Wait until the controller pod is running
 kubectl wait --namespace ingress-nginx \
   --for=condition=ready pod \
   --selector=app.kubernetes.io/component=controller \
   --timeout=120s
+
+# Confirm a Load Balancer hostname has been assigned
+kubectl get svc ingress-nginx-controller -n ingress-nginx
 ```
 
-### Verify Cluster
+The `EXTERNAL-IP` column will show an AWS NLB hostname — note this for later.
+
+### 2b. AWS EBS CSI Driver
+
+Required for the MySQL PersistentVolumeClaim to bind. Without it the database pod will stay in `Pending` forever.
 
 ```bash
-# Check cluster status
-kubectl cluster-info
+bash eks-setup/install-ebs-csi.sh
 
-# Check nodes
-kubectl get nodes
+# Verify the driver pods are running
+kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-ebs-csi-driver
 
-# Check system pods
-kubectl get pods -n kube-system
-
-# Check ingress controller
-kubectl get pods -n ingress-nginx
-kubectl get svc -n ingress-nginx
-
-# Get ingress load balancer URL
-kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+# Verify the gp2 storage class is available
+kubectl get storageclass
 ```
 
-## Deployment Steps
+---
 
-### 1. Clone Repositories
+## Phase 3 — Deploy the Application
 
-```bash
-# Application repository
-git clone https://github.com/DevOps-Cloud-Mentorship/Project-4-Deploy-to-EKS-app.git
-
-# Manifest repository
-git clone https://github.com/DevOps-Cloud-Mentorship/Project-4-Deploy-to-EKS-manifest.git
-```
-
-### 2. Create Namespace
+### 3a. Create the namespace
 
 ```bash
 kubectl create namespace lumiatech
 kubectl config set-context --current --namespace=lumiatech
 ```
 
-### 3. Create Helm Chart
+### 3b. Review / update values
 
-#### Create the chart structure
-
-```bash
-mkdir -p helm/lumiatech/templates
-```
-
-#### Create `helm/lumiatech/Chart.yaml`
-
-```yaml
-apiVersion: v2
-name: lumiatech
-description: Lumiatech Java application with MySQL
-type: application
-version: 1.0.0
-appVersion: "latest"
-```
-
-#### Create `helm/lumiatech/values.yaml`
+Open `helm/lumiatech/values.yaml` and confirm the image tags and configuration:
 
 ```yaml
 app:
-  image: ndzenyuy/lumia-app:latest
-  replicas: 1
+  image: ndzenyuy/lumia-app:<tag>   # set by CI; use a specific SHA tag, not "latest"
+  replicas: 2
   port: 8080
 
 db:
-  image: ndzenyuy/lumia-db:latest
+  image: ndzenyuy/lumia-db:<tag>
   port: 3306
   name: accounts
   user: admin
-  password: admin123
+  password: admin123                # stored in a Kubernetes Secret as base64
   storage: 3Gi
   storageClass: gp2
 
@@ -283,198 +158,163 @@ ingress:
   className: nginx
 ```
 
-#### Copy manifests into templates
+> **Note on the Secret:** The Helm template automatically base64-encodes `db.password` via `{{ .Values.db.password | b64enc }}`. The raw `kubedefs/secret.yaml` contains the hardcoded base64 value `YWRtaW4xMjM=` (= `admin123`). If you change the password, run `echo -n 'newpassword' | base64` and update accordingly.
+
+### 3c. Validate the chart
 
 ```bash
-cp kubedefs/*.yaml helm/lumiatech/templates/
-```
-
-#### Templatize `helm/lumiatech/templates/secret.yaml`
-
-```yaml
-apiVersion: v1
-kind: Secret
-metadata:
-  name: app-secret
-type: Opaque
-data:
-  db-pass: {{ .Values.db.password | b64enc }}
-```
-
-#### Templatize `helm/lumiatech/templates/appdeploy.yaml`
-
-Replace hardcoded values with template variables:
-
-```yaml
-spec:
-  replicas: {{ .Values.app.replicas }}
-  ...
-  containers:
-  - name: lumia-app
-    image: {{ .Values.app.image }}
-    env:
-    - name: DB_PORT
-      value: "{{ .Values.db.port }}"
-    - name: DB_NAME
-      value: "{{ .Values.db.name }}"
-    - name: DB_USER
-      value: "{{ .Values.db.user }}"
-    - name: DB_PASS
-      valueFrom:
-        secretKeyRef:
-          name: app-secret
-          key: db-pass
-```
-
-#### Templatize `helm/lumiatech/templates/dbpvc.yaml`
-
-```yaml
-spec:
-  storageClassName: {{ .Values.db.storageClass }}
-  resources:
-    requests:
-      storage: {{ .Values.db.storage }}
-```
-
-#### Templatize `helm/lumiatech/templates/appingress.yaml`
-
-```yaml
-spec:
-  ingressClassName: {{ .Values.ingress.className }}
-  rules:
-  - host: {{ .Values.ingress.host }}
-```
-
-#### Validate the chart before deploying
-
-```bash
-# Lint the chart for errors
 helm lint helm/lumiatech
-
-# Preview rendered templates without deploying
-helm template lumiatech helm/lumiatech -n lumiatech
+helm template lumiatech helm/lumiatech -n lumiatech   # preview rendered YAML
 ```
 
-### 4. Deploy Using Helm
+### 3d. Install
+
+**Step 1 — Adopt any resources already in the namespace into the Helm release.**
+This is required if any manifests were previously applied with `kubectl apply`. It is safe to run even if the namespace is empty.
 
 ```bash
-# Install the chart
-helm install lumiatech helm/lumiatech -n lumiatech --create-namespace
-
-# Verify the release
-helm list -n lumiatech
+for resource in deployment service configmap pvc secret ingress; do
+  kubectl get $resource -n lumiatech -o name 2>/dev/null | while read name; do
+    kubectl label $name -n lumiatech "app.kubernetes.io/managed-by=Helm" --overwrite
+    kubectl annotate $name -n lumiatech \
+      "meta.helm.sh/release-name=lumiatech" \
+      "meta.helm.sh/release-namespace=lumiatech" --overwrite
+  done
+done
 ```
 
-#### Upgrade after changes
+**Step 2 — Install the Helm release.**
 
 ```bash
-helm upgrade lumiatech helm/lumiatech -n lumiatech
+helm install lumiatech helm/lumiatech -n lumiatech
 ```
 
-#### Override a value without editing values.yaml
+**Step 3 — Watch the pods come up.**
+The database starts first; the app init container waits for the DB DNS to resolve before the app pod starts.
 
 ```bash
-helm upgrade lumiatech helm/lumiatech -n lumiatech \
-  --set app.image=ndzenyuy/lumia-app:v2.0
+kubectl get pods -n lumiatech -w
 ```
 
-#### Rollback to a previous release
+**Expected steady state (all pods `1/1 Running`):**
+```
+NAME                         READY   STATUS    RESTARTS   AGE
+lumia-app-xxxxxxxxx-xxxxx    1/1     Running   0          3m
+lumiadb-xxxxxxxxx-xxxxx      1/1     Running   0          3m
+rmq01-xxxxxxxxx-xxxxx        1/1     Running   0          3m
+mc01-xxxxxxxxx-xxxxx         1/1     Running   0          3m
+```
+
+> **Why the init container?** `lumia-app` has a busybox init container that loops on `nslookup lumiadb` until the database service DNS resolves. This prevents the app from crashing before MySQL is ready.
+
+### 3e. Verify
 
 ```bash
-helm rollback lumiatech -n lumiatech
+kubectl get pods,svc,ingress -n lumiatech
+kubectl describe ingress lumia-ingress -n lumiatech   # confirm ADDRESS is populated
 ```
 
-#### Uninstall
+---
+
+## Phase 4 — Access the Application
+
+### Option A: Quick local test (port-forward)
 
 ```bash
-helm uninstall lumiatech -n lumiatech
+kubectl port-forward svc/lumia-app-service 8080:8080 -n lumiatech
+# Open: http://localhost:8080
 ```
 
-### 5. Verify Deployment
+### Option B: Domain via /etc/hosts (demo / staging)
 
 ```bash
-kubectl get pods -n lumiatech
-kubectl get svc -n lumiatech
-kubectl get ingress -n lumiatech
+# Get the NLB hostname
+LB=$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "Add to /etc/hosts: $LB www.lumiatechs.com"
 ```
 
-### 6. Access Application
+**On Linux/Mac:** `sudo nano /etc/hosts`, add the line above.  
+**On Windows:** Open `C:\Windows\System32\drivers\etc\hosts` as Administrator and add the line.
+
+Then open `http://www.lumiatechs.com`.
+
+### Option C: Route53 DNS (production)
+
+For a real domain, use an **Alias A record** (not CNAME — Alias is free, faster, and can be used at the zone apex):
 
 ```bash
-# Get ingress load balancer URL
-kubectl get svc ingress-nginx-controller -n ingress-nginx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+# Get your hosted zone ID
+HOSTED_ZONE_ID=$(aws route53 list-hosted-zones \
+  --query "HostedZones[?Name=='lumiatechs.com.'].Id" \
+  --output text | cut -d'/' -f3)
 
-# Update /etc/hosts or DNS
-echo "<INGRESS_LB_URL> www.lumiatechs.com" >> /etc/hosts
+# Get the NLB hostname
+LB=$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
 
-# Access via browser
-http://www.lumiatechs.com
+# ELB hosted zone IDs by region:
+# us-east-1: Z35SXDOTRQ7X7K  |  us-east-2: Z3AADJGX6KTTL2
+# us-west-1: Z368ELLRRE2KJ0  |  us-west-2: Z1H1FL5HABSF5
+LB_ZONE="Z35SXDOTRQ7X7K"
+
+aws route53 change-resource-record-sets \
+  --hosted-zone-id $HOSTED_ZONE_ID \
+  --change-batch "{
+    \"Changes\": [{
+      \"Action\": \"UPSERT\",
+      \"ResourceRecordSet\": {
+        \"Name\": \"www.lumiatechs.com\",
+        \"Type\": \"A\",
+        \"AliasTarget\": {
+          \"HostedZoneId\": \"$LB_ZONE\",
+          \"DNSName\": \"$LB\",
+          \"EvaluateTargetHealth\": false
+        }
+      }
+    }]
+  }"
+
+# DNS propagation takes 2–10 minutes
+nslookup www.lumiatechs.com
 ```
 
-### 7. Configure ArgoCD
+---
 
-#### Update kubeconfig
+## Phase 5 — GitOps with ArgoCD (optional)
 
-```bash
-aws eks update-kubeconfig --name lumiatech-cluster --region us-east-1
-```
+ArgoCD watches this repository and automatically syncs any commit to the cluster, enabling GitOps. The CI pipeline in the application repo updates `helm/lumiatech/values.yaml` with the new image SHA tag and commits here; ArgoCD then deploys the new version without any manual `helm upgrade`.
 
-#### Install ArgoCD on the cluster
+### Install ArgoCD
 
 ```bash
 kubectl create namespace argocd
 kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
-```
 
-#### Verify installation
-
-```bash
-kubectl get all -n argocd
-```
-
-#### Expose ArgoCD
-
-```bash
+# Expose the UI
 kubectl patch svc argocd-server -n argocd -p '{"spec": {"type": "LoadBalancer"}}'
+
+# Get the server URL
+export ARGOCD_SERVER=$(kubectl get svc argocd-server -n argocd \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "ArgoCD URL: https://$ARGOCD_SERVER"
+
+# Get the initial admin password
+kubectl -n argocd get secret argocd-initial-admin-secret \
+  -o jsonpath="{.data.password}" | base64 -d && echo
 ```
 
-#### Get ArgoCD server DNS
+### Register the application
 
-```bash
-export ARGOCD_SERVER=$(kubectl get svc argocd-server -n argocd -o json | jq --raw-output '.status.loadBalancer.ingress[0].hostname')
-echo $ARGOCD_SERVER
-```
-
-#### Get ArgoCD admin password
-
-```bash
-export ARGO_PWD=$(kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath="{.data.password}" | base64 -d)
-echo $ARGO_PWD
-```
-
-#### Login to ArgoCD UI
-
-Open your browser and navigate to:
-```
-https://<ARGOCD_SERVER>
-```
-
-- **Username**: `admin`
-- **Password**: value of `$ARGO_PWD`
-
-#### Create ArgoCD Application pointing to Helm chart
-
-**Option 1: Via CLI**
+**Option A — CLI:**
 
 ```bash
 # Install ArgoCD CLI
 curl -sSL -o argocd https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
 chmod +x argocd && sudo mv argocd /usr/local/bin/
 
-# Login
-argocd login $ARGOCD_SERVER --username admin --password $ARGO_PWD --insecure
+argocd login $ARGOCD_SERVER --username admin --password <password> --insecure
 
-# Create the app using the Helm chart path
 argocd app create lumiatech \
   --repo https://github.com/DevOps-Cloud-Mentorship/Project-4-Deploy-to-EKS-manifest.git \
   --path helm/lumiatech \
@@ -484,17 +324,13 @@ argocd app create lumiatech \
   --auto-prune \
   --self-heal
 
-# Verify the app
 argocd app get lumiatech
-
-# Sync manually if needed
-argocd app sync lumiatech
+argocd app sync lumiatech   # force immediate sync if needed
 ```
 
-**Option 2: Via UI**
+**Option B — UI:**
 
-1. Click **+ New App**
-2. Fill in the form:
+Open `https://<ARGOCD_SERVER>`, log in with `admin` / `<password>`, click **+ New App** and fill in:
 
 | Field | Value |
 |---|---|
@@ -507,280 +343,251 @@ argocd app sync lumiatech
 | Cluster URL | `https://kubernetes.default.svc` |
 | Namespace | `lumiatech` |
 
-3. Click **Create**
-4. Click **Sync** → **Synchronize**
+Click **Create**, then **Sync → Synchronize**.
 
-#### Delete cluster
+---
 
-```bash
-eksctl delete cluster --name lumiatech-cluster --region us-east-1
-```
+## Phase 6 — Monitoring with Prometheus & Grafana (optional)
 
-
-## CI/CD Pipeline
-
-### Build & Push
-
-1. Maven builds WAR file
-2. Docker builds container image
-3. Image pushed to registry
-4. Trigger manifest repository update
-
-### Deploy
-
-1. Update image tag in values.yaml
-2. Commit to manifest repository
-3. Helm upgrade deployment
-4. Kubernetes rolls out new version
-
-## Configuration
-
-### Secrets
-
-Update `secret.yaml` with base64 encoded values:
-
-```bash
-echo -n 'your-password' | base64
-```
-
-### Environment Variables
-
-- `DB_HOST`: Database service name (lumiadb)
-- `DB_PORT`: Database port (3306)
-- `DB_NAME`: Database name (accounts)
-- `DB_USER`: Database user (root)
-- `DB_PASS`: Database password (from secret)
-- `MYSQL_ROOT_PASSWORD`: Database root password (from secret)
-
-### Persistent Storage
-
-- Database uses PVC for data persistence
-- Storage class: gp2 (AWS EBS)
-- Storage size: 3Gi
-
-### Docker Images
-
-- **Application**: `ndzenyuy/lumia-app:latest`
-- **Database**: `ndzenyuy/lumia-db:latest`
-
-### Ingress Configuration
-
-- **Domain**: www.lumiatechs.com
-- **Ingress Controller**: NGINX
-- **Backend Service**: lumia-app-service:8080
-
-## Monitoring & Troubleshooting
-
-### Install Prometheus & Grafana
-
-#### Add Helm repository
+### Install kube-prometheus-stack
 
 ```bash
 helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update
-```
 
-#### Install kube-prometheus-stack
-
-```bash
 kubectl create namespace monitoring
 
 helm install prometheus prometheus-community/kube-prometheus-stack \
   --namespace monitoring \
   --set grafana.adminPassword=admin123 \
   --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false
+
+# Wait for all pods to be running
+kubectl get pods -n monitoring -w
 ```
 
-#### Verify installation
-
-```bash
-kubectl get pods -n monitoring
-kubectl get svc -n monitoring
-```
-
-#### Access Grafana
-
-```bash
-kubectl patch svc prometheus-grafana -n monitoring -p '{"spec": {"type": "LoadBalancer"}}'
-
-# Wait for external hostname
-kubectl get svc prometheus-grafana -n monitoring -w
-
-# Get the URL
-export GRAFANA_URL=$(kubectl get svc prometheus-grafana -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-echo "http://$GRAFANA_URL"
-```
-
-Open `http://<GRAFANA_URL>` in your browser.
-
-- **Username**: `admin`
-- **Password**: `admin123`
-
-#### Access Prometheus UI
-
-```bash
-kubectl patch svc prometheus-kube-prometheus-prometheus -n monitoring -p '{"spec": {"type": "LoadBalancer"}}'
-
-# Get the URL
-export PROMETHEUS_URL=$(kubectl get svc prometheus-kube-prometheus-prometheus -n monitoring -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-echo "http://$PROMETHEUS_URL:9090"
-```
-
-Open `http://<PROMETHEUS_URL>:9090` in your browser.
-
-#### Configure ServiceMonitor for lumiatech app
-
-Create `kubedefs/servicemonitor.yaml` to scrape app metrics:
-
-```yaml
-apiVersion: monitoring.coreos.com/v1
-kind: ServiceMonitor
-metadata:
-  name: lumiatech-monitor
-  namespace: monitoring
-  labels:
-    release: prometheus
-spec:
-  namespaceSelector:
-    matchNames:
-      - lumiatech
-  selector:
-    matchLabels:
-      app: lumia-app
-  endpoints:
-    - port: http
-      path: /actuator/prometheus
-      interval: 30s
-```
+### Register the app as a Prometheus target
 
 ```bash
 kubectl apply -f kubedefs/servicemonitor.yaml
 ```
 
-#### Verify Prometheus datasource in Grafana
+This scrapes `/actuator/prometheus` on the lumia-app pods every 30 seconds. The endpoint is only available if the application image is built with Spring Boot Actuator + Micrometer.
 
-The `kube-prometheus-stack` chart automatically configures Prometheus as a datasource in Grafana. To verify:
-
-1. Login to Grafana
-2. Go to **Connections** → **Data Sources**
-3. Confirm `Prometheus` is listed and its status shows **Data source connected and labels found**
-
-If the datasource is missing or shows **No data**, add/fix it manually:
-
-1. Click **Add data source** → select **Prometheus**
-2. Set URL to the in-cluster DNS name:
-   ```
-   http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
-   ```
-3. Click **Save & Test** — you should see **Data source connected and labels found**
-
-#### Troubleshoot: No data in Grafana dashboards
-
-If dashboards show **No data**, run through these checks:
+### Access Grafana
 
 ```bash
-# 1. Confirm Prometheus pods are running
-kubectl get pods -n monitoring
-
-# 2. Confirm Prometheus is scraping targets
-# Open Prometheus UI → Status → Targets — all targets should be UP
-echo "http://$PROMETHEUS_URL:9090/targets"
-
-# 3. Check Prometheus has data by running a test query in the UI
-# Go to http://$PROMETHEUS_URL:9090 → Graph → run:
-# up
-# node_cpu_seconds_total
-
-# 4. Verify the datasource URL in Grafana is the internal cluster DNS
-# Connections → Data Sources → Prometheus → URL should be:
-# http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090
-
-# 5. Check Grafana can reach Prometheus
-kubectl exec -n monitoring deploy/prometheus-grafana -- \
-  wget -qO- http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090/-/healthy
-
-# 6. Check for scrape config issues
-kubectl logs -n monitoring -l app=prometheus --container prometheus | tail -50
+kubectl patch svc prometheus-grafana -n monitoring -p '{"spec": {"type": "LoadBalancer"}}'
+export GRAFANA=$(kubectl get svc prometheus-grafana -n monitoring \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "Grafana: http://$GRAFANA"
+# Username: admin  |  Password: admin123
 ```
 
-Common causes:
-- **Datasource URL wrong**: Must use the internal cluster DNS, not the external LoadBalancer hostname
-- **Time range too narrow**: Set Grafana time range to **Last 1 hour** or wider
-- **Wrong dashboard variables**: On imported dashboards, check the `datasource` dropdown at the top is set to `Prometheus`
-- **No metrics endpoint on app**: The JVM dashboard (ID `4701`) requires Spring Boot Actuator with Micrometer — only works if your app exposes `/actuator/prometheus`
-
-#### Useful Grafana dashboards
-
-Import these dashboards via Grafana UI (**+** → **Import** → enter ID):
+**Useful dashboard IDs** (import via Grafana UI → **+** → **Import**):
 
 | Dashboard | ID |
 |---|---|
 | Kubernetes cluster overview | `315` |
 | Kubernetes pod metrics | `6417` |
-| JVM (Micrometer) | `4701` |
+| JVM / Micrometer | `4701` |
 | Node Exporter Full | `1860` |
 
-#### Upgrade or change Grafana password
+> **If Grafana shows "No data":** Go to **Connections → Data Sources → Prometheus** and confirm the URL is the internal cluster DNS `http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090`, not the external LoadBalancer hostname.
+
+### Access Prometheus UI
 
 ```bash
-helm upgrade prometheus prometheus-community/kube-prometheus-stack \
-  --namespace monitoring \
-  --set grafana.adminPassword=<new-password>
+kubectl patch svc prometheus-kube-prometheus-prometheus -n monitoring \
+  -p '{"spec": {"type": "LoadBalancer"}}'
+export PROM=$(kubectl get svc prometheus-kube-prometheus-prometheus -n monitoring \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+echo "Prometheus: http://$PROM:9090"
 ```
 
-#### Uninstall
+---
+
+## Helm Operations Reference
 
 ```bash
-helm uninstall prometheus -n monitoring
-kubectl delete namespace monitoring
+# Upgrade after changing values.yaml or templates
+helm upgrade lumiatech helm/lumiatech -n lumiatech
+
+# Override image tag without editing values.yaml (used by CI)
+helm upgrade lumiatech helm/lumiatech -n lumiatech \
+  --set app.image=ndzenyuy/lumia-app:<new-tag>
+
+# Roll back to the previous release
+helm rollback lumiatech -n lumiatech
+
+# List release history
+helm history lumiatech -n lumiatech
+
+# Uninstall
+helm uninstall lumiatech -n lumiatech
 ```
 
-### Check Logs
+---
+
+## Troubleshooting
+
+### PVC stays in `Pending`
+
+The EBS CSI driver is not installed or the IAM role is missing.
 
 ```bash
+# Check PVC status and events
+kubectl describe pvc db-pv-claim -n lumiatech
+
+# Verify EBS CSI driver pods are running
+kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-ebs-csi-driver
+
+# Re-run the installation script if missing
+bash eks-setup/install-ebs-csi.sh
+
+# Verify addon status
+aws eks describe-addon --cluster-name lumiatechs-eks-cluster \
+  --addon-name aws-ebs-csi-driver --region us-east-1
+```
+
+### App init container loops (`waiting for mydb`)
+
+The `lumiadb` service or pod is not ready.
+
+```bash
+# Check DB pod status and events
+kubectl get pods -l app=lumiadb -n lumiatech
+kubectl describe pod -l app=lumiadb -n lumiatech
+
+# Check DB logs
+kubectl logs -l app=lumiadb -n lumiatech --tail=50
+
+# Check init container logs on the app pod
+APP_POD=$(kubectl get pods -l app=lumia-app -n lumiatech -o jsonpath='{.items[0].metadata.name}')
+kubectl logs $APP_POD -c init-mydb -n lumiatech
+
+# Check service endpoints (must show a pod IP, not <none>)
+kubectl get endpoints lumiadb -n lumiatech
+```
+
+### `ImagePullBackOff`
+
+The image tag in `values.yaml` does not exist in Docker Hub.
+
+```bash
+kubectl describe pod <pod-name> -n lumiatech | grep -A5 Events
+# Confirm the image tag exists: docker pull ndzenyuy/lumia-app:<tag>
+```
+
+### App crashes with RabbitMQ / Memcached errors
+
+The application requires MySQL, RabbitMQ, and Memcached. If you see errors like `Failed to check/redeclare auto-delete queue(s)` in the app logs, the message queue or cache is not deployed.
+
+```bash
+# Check all expected pods are running
+kubectl get pods -n lumiatech
+
+# RabbitMQ connectivity test
+APP_POD=$(kubectl get pods -l app=lumia-app -n lumiatech -o jsonpath='{.items[0].metadata.name}')
+kubectl exec $APP_POD -n lumiatech -- nc -zv rmq01 5672
+kubectl exec $APP_POD -n lumiatech -- nc -zv mc01 11211
+
+# Check RabbitMQ logs
+kubectl logs -l app=rmq01 -n lumiatech
+```
+
+### Can't access `www.lumiatechs.com`
+
+```bash
+# 1. Confirm ingress has an ADDRESS
+kubectl get ingress lumia-ingress -n lumiatech
+
+# 2. Confirm NGINX controller has an external IP
+kubectl get svc ingress-nginx-controller -n ingress-nginx
+
+# 3. Test with the Host header directly against the LB (bypasses DNS)
+LB=$(kubectl get svc ingress-nginx-controller -n ingress-nginx \
+  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+curl -H "Host: www.lumiatechs.com" http://$LB
+
+# 4. Test DNS resolution
+nslookup www.lumiatechs.com
+dig www.lumiatechs.com +short
+```
+
+### Wrong database password
+
+```bash
+# Check current secret value
+kubectl get secret app-secret -n lumiatech \
+  -o jsonpath='{.data.db-pass}' | base64 -d && echo
+# Should output: admin123
+
+# Fix if wrong
+kubectl delete secret app-secret -n lumiatech
+kubectl create secret generic app-secret \
+  --from-literal=db-pass=admin123 -n lumiatech
+kubectl rollout restart deployment lumiadb lumia-app -n lumiatech
+```
+
+### Connect directly to MySQL
+
+```bash
+DB_POD=$(kubectl get pods -l app=lumiadb -n lumiatech -o jsonpath='{.items[0].metadata.name}')
+kubectl exec -it $DB_POD -n lumiatech -- mysql -uadmin -padmin123 -e "SHOW DATABASES;"
+```
+
+### General debug commands
+
+```bash
+# Stream all logs
 kubectl logs -f deployment/lumia-app -n lumiatech
 kubectl logs -f deployment/lumiadb -n lumiatech
-```
+kubectl logs -f deployment/rmq01 -n lumiatech
 
-### Debug Pods
-
-```bash
+# Describe any pod for detailed events
 kubectl describe pod <pod-name> -n lumiatech
-kubectl exec -it <pod-name> -n lumiatech -- /bin/bash
+
+# Check all events sorted by time
+kubectl get events -n lumiatech --sort-by='.lastTimestamp'
+
+# Shell into app pod
+kubectl exec -it deployment/lumia-app -n lumiatech -- /bin/bash
+
+# Check environment variables seen by the app
+kubectl exec deployment/lumia-app -n lumiatech -- env | grep -E "DB_|RABBIT|MEMCACH"
 ```
 
-### Common Issues
+---
 
-- **Init containers stuck**: Check service DNS resolution
-- **ImagePullBackOff**: Verify registry credentials
-- **CrashLoopBackOff**: Check application logs and database connectivity
+## CI/CD Pipeline
+
+The Jenkins pipeline in the application repository:
+
+1. Builds the Maven WAR artifact
+2. Builds Docker images tagged with the Git commit SHA (`ndzenyuy/lumia-app:<sha>`)
+3. Pushes images to Docker Hub
+4. Updates `helm/lumiatech/values.yaml` with the new image tags
+5. Commits and pushes to this manifest repository
+
+ArgoCD detects the new commit and syncs the Helm chart, triggering a rolling update in the cluster. **Always use SHA-tagged images in `values.yaml` — not `latest`** — so every deployment is traceable to a specific commit.
+
+---
 
 ## Cleanup
 
 ```bash
-# Delete all resources
-kubectl delete -f kubedefs/
-
-# Delete namespace
+# Remove the application
+helm uninstall lumiatech -n lumiatech
 kubectl delete namespace lumiatech
 
-# Delete EKS cluster (optional)
-eksctl delete cluster --name lumiatech-cluster --region us-east-1
+# Remove monitoring (if installed)
+helm uninstall prometheus -n monitoring
+kubectl delete namespace monitoring
+
+# Remove ArgoCD (if installed)
+kubectl delete namespace argocd
+
+# Delete the EKS cluster (irreversible — costs stop immediately)
+eksctl delete cluster --name lumiatechs-eks-cluster --region us-east-1
 ```
-
-## Security Considerations
-
-- Secrets stored in Kubernetes Secret (consider using Sealed Secrets or External Secrets Operator)
-- Use private container registry
-- Implement RBAC policies
-- Enable network policies
-- Regular security scanning of images
-
-## Future Enhancements
-
-- Add Horizontal Pod Autoscaler (HPA)
-- ~~Implement monitoring with Prometheus/Grafana~~ ✅ Done
-- Add centralized logging with ELK/EFK stack
-- Implement GitOps with ArgoCD/FluxCD
-- Add health checks and readiness probes
-- Implement blue-green or canary deployments

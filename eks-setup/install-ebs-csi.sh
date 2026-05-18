@@ -3,7 +3,7 @@
 # Install AWS EBS CSI Driver for EKS
 # This is required for PersistentVolumeClaims to work in EKS
 
-CLUSTER_NAME="lumiatech-cluster"
+CLUSTER_NAME="lumiatechs-eks-cluster"
 REGION="us-east-1"
 
 echo "Installing AWS EBS CSI Driver..."
