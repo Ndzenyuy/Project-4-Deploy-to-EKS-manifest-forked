@@ -8,7 +8,7 @@ db:
   port: 3306
   name: accounts
   user: admin
-  password: YWRtaW4xMjM=
+  password: admin
   storage: 3Gi
   storageClass: gp2
   replicas: 1
