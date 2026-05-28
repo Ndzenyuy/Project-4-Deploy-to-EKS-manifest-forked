@@ -1,10 +1,10 @@
 app:
-  image: ndzenyuy/lumia-app:59c555c
+  image: ndzenyuy/lumia-app:18ad0f5
   replicas: 6
   port: 8080
 
 db:
-  image: ndzenyuy/lumia-db:59c555c
+  image: ndzenyuy/lumia-db:18ad0f5
   port: 3306
   name: accounts
   user: admin
