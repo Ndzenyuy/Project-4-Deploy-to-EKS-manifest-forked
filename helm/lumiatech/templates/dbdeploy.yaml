@@ -29,6 +29,15 @@ spec:
              secretKeyRef:
                name: app-secret
                key: db-pass
+         - name: MYSQL_USER
+           value: "{{ .Values.db.user }}"
+         - name: MYSQL_PASSWORD
+           valueFrom:
+             secretKeyRef:
+               name: app-secret
+               key: db-pass
+         - name: MYSQL_DATABASE
+           value: "{{ .Values.db.name }}"
       volumes:
         - name: lumia-db-data
           persistentVolumeClaim:

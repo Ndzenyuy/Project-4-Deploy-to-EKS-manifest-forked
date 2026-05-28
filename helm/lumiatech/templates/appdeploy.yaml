@@ -18,13 +18,11 @@ spec:
       - name: lumia-app
         image: {{ .Values.app.image }}
         env:
-        - name: DB_PORT
-          value: "{{ .Values.db.port }}"
-        - name: DB_NAME
-          value: "{{ .Values.db.name }}"
-        - name: DB_USER
+        - name: JDBC_URL
+          value: "jdbc:mysql://lumiadb:3306/{{ .Values.db.name }}?useUnicode=true&characterEncoding=UTF-8&zeroDateTimeBehavior=convertToNull"
+        - name: JDBC_USERNAME
           value: "{{ .Values.db.user }}"
-        - name: DB_PASS
+        - name: JDBC_PASSWORD
           valueFrom:
             secretKeyRef:
               name: app-secret

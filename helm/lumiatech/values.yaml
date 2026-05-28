@@ -1,6 +1,6 @@
 app:
   image: ndzenyuy/lumia-app:18ad0f5
-  replicas: 6
+  replicas: 0
   port: 8080
 
 db:
@@ -8,10 +8,10 @@ db:
   port: 3306
   name: accounts
   user: admin
-  password: admin
+  password: admin123
   storage: 3Gi
   storageClass: gp2
-  replicas: 2
+  replicas: 0
 
 ingress:
   host: www.lumiatechs.com
